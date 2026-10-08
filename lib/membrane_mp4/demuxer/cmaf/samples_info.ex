@@ -131,6 +131,12 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
   end
 
   defp handle_trun(trun_box, offset_acc, ts_acc, track_description) do
+    [first_sample | _rest] = trun_box.fields.samples
+
+    if is_nil(first_sample[:sample_size] || track_description.default_sample_size) do
+      raise "Malformed trun: samples carry no sample_size and tfhd declares no default_sample_size"
+    end
+
     Enum.map_reduce(
       trun_box.fields.samples,
       {base_offset(trun_box.fields, offset_acc, track_description), ts_acc},
