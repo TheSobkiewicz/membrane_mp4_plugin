@@ -119,4 +119,39 @@ defmodule Membrane.MP4.ContainerTest do
     assert Container.serialize(mp4) == {:error, box: :ftyp, field: :major_brand}
     assert_raise RuntimeError, ~r/Error serializing MP4/, fn -> Container.serialize!(mp4) end
   end
+
+  describe "counted list (trun samples) with all per-sample fields gated off" do
+    defp box(type, body), do: <<8 + byte_size(body)::32, type::binary, body::binary>>
+
+    defp gated_off_moof(sample_count) do
+      trun = box("trun", <<0::8, 0x1::24, sample_count::32, 0::signed-32>>)
+      box("moof", box("traf", trun))
+    end
+
+    defp parse_trun(data) do
+      {[{:moof, moof}], <<>>} = Container.parse!(data)
+      moof.children[:traf].children[:trun]
+    end
+
+    test "parses to no items, with the declared count left in sample_count" do
+      fields = parse_trun(gated_off_moof(5)).fields
+
+      assert fields.samples == []
+      assert fields.sample_count == 5
+    end
+
+    test "round-trips back to identical bytes" do
+      data = gated_off_moof(5)
+      {boxes, <<>>} = Container.parse!(data)
+      assert Container.serialize!(boxes) == data
+    end
+
+    test "a huge sample_count neither allocates nor is lost" do
+      task = Task.async(fn -> parse_trun(gated_off_moof(0xFFFFFFFF)).fields end)
+      fields = Task.await(task, 2000)
+
+      assert fields.samples == []
+      assert fields.sample_count == 0xFFFFFFFF
+    end
+  end
 end
