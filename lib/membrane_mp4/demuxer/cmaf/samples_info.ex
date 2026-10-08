@@ -12,7 +12,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
           track_id: non_neg_integer()
         }
 
-  # A compact run of identical samples (see `handle_trun/3`), sorted among plain
+  # A compact run of identical samples (see `handle_trun/4`), sorted among plain
   # `sample_description`s by its first `offset`.
   @type sample_run :: %{
           offset: non_neg_integer(),
@@ -71,21 +71,27 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
       base_media_decode_time: traf_box.children[:tfdt].fields.base_media_decode_time || 0
     }
 
-    {samples, _ts_acc} =
-      Enum.filter(traf_box.children, fn {box_name, _box} -> box_name == :trun end)
-      |> Enum.flat_map_reduce(track_description.base_media_decode_time, fn {:trun, trun_box},
-                                                                           ts_acc ->
-        {samples, {_size_acc, new_ts_acc}} =
-          handle_trun(
-            trun_box,
-            ts_acc,
-            track_description
-          )
-
-        {samples, new_ts_acc}
-      end)
+    {samples, _acc} =
+      traf_box.children
+      |> Enum.filter(fn {box_name, _box} -> box_name == :trun end)
+      |> Enum.flat_map_reduce(
+        {track_description.base_data_offset, track_description.base_media_decode_time},
+        fn {:trun, trun_box}, {offset_acc, ts_acc} ->
+          handle_trun(trun_box, offset_acc, ts_acc, track_description)
+        end
+      )
 
     samples
+  end
+
+  # ISO/IEC 14496-12 8.8.8: without the data-offset-present flag a run starts at
+  # `base_data_offset` (first run of the traf) or right after the previous run's data - both are
+  # `offset_acc`.
+  defp base_offset(fields, offset_acc, track_description) do
+    case fields[:data_offset] do
+      nil -> offset_acc
+      data_offset -> track_description.base_data_offset + data_offset
+    end
   end
 
   # `ParseHelper` stops materializing a counted list whose items carry no bits, so a `trun` with
@@ -94,9 +100,9 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
   # that `Engine.read_mdat/2` expands against the `mdat` that has to back it - the declared count
   # never drives an allocation on its own. Note that only `tfhd` defaults are read here, not
   # `mvex`/`trex` ones.
-  defp handle_trun(%{fields: %{samples: []} = fields}, ts_acc, track_description) do
+  defp handle_trun(%{fields: %{samples: []} = fields}, offset_acc, ts_acc, track_description) do
     count = fields.sample_count
-    offset = track_description.base_data_offset + fields.data_offset
+    offset = base_offset(fields, offset_acc, track_description)
     size = track_description.default_sample_size
     duration = track_description.default_sample_duration
 
@@ -124,14 +130,10 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
     end
   end
 
-  defp handle_trun(
-         trun_box,
-         ts_acc,
-         track_description
-       ) do
+  defp handle_trun(trun_box, offset_acc, ts_acc, track_description) do
     Enum.map_reduce(
       trun_box.fields.samples,
-      {track_description.base_data_offset + trun_box.fields.data_offset, ts_acc},
+      {base_offset(trun_box.fields, offset_acc, track_description), ts_acc},
       fn sample, {size_acc, ts_acc} ->
         size = sample[:sample_size] || track_description.default_sample_size
         duration = sample[:sample_duration] || track_description.default_sample_duration

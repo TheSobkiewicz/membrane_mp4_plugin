@@ -354,6 +354,22 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
                [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>, <<3, 3, 3, 3>>]
     end
 
+    test "a second trun without data_offset continues after the first run's data" do
+      # ISO/IEC 14496-12 8.8.8: no data-offset-present means the run starts where the previous
+      # one ended, not at base_data_offset.
+      build = fn off ->
+        first = box("trun", <<0::8, 0x1::24, 2::32, off::signed-32>>)
+        second = box("trun", <<0::8, 0::24, 2::32>>)
+        box("moof", box("traf", traf_header(4) <> first <> second))
+      end
+
+      moof = build.(byte_size(build.(0)) + 8)
+      mdat = box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4>>)
+
+      assert payloads(demux(moof <> mdat)) ==
+               [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>, <<3, 3, 3, 3>>, <<4, 4, 4, 4>>]
+    end
+
     test "rejects a run whose sample size is zero (would otherwise be unbounded)" do
       moof = gated_off_moof(0xFFFFFFFF, default_sample_size: 0)
       mdat = box("mdat", <<0>>)
@@ -364,6 +380,16 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     test "rejects a run whose data_offset points before the current mdat content" do
       moof = gated_off_moof(0xFFFFFFFF, default_sample_size: 1, data_offset: -2_000_000_000)
       mdat = box("mdat", <<0>>)
+
+      assert_raise RuntimeError, ~r/outside the received mdat/, fn -> demux(moof <> mdat) end
+    end
+
+    test "a trun without the data_offset flag fails cleanly, not with a raw KeyError" do
+      # trun fo_flags = 0: no data_offset key in the parsed fields (pre-fix this KeyErrored).
+      # The run then starts at base_data_offset, i.e. inside the moof, which is malformed.
+      trun = box("trun", <<0::8, 0::24, 5::32>>)
+      moof = box("moof", box("traf", traf_header(4) <> trun))
+      mdat = box("mdat", <<0, 0, 0, 0>>)
 
       assert_raise RuntimeError, ~r/outside the received mdat/, fn -> demux(moof <> mdat) end
     end

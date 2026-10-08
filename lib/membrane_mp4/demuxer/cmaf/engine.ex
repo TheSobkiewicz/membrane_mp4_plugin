@@ -238,7 +238,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
     {samples, %{engine | samples_info: rest_of_samples_info}}
   end
 
-  # A run (see `SamplesInfo.handle_trun/3`) is expanded here, against the mdat that has to back
+  # A run (see `SamplesInfo.handle_trun/4`) is expanded here, against the mdat that has to back
   # it: one declaring more bytes than the mdat holds is malformed and rejected, never expanded on
   # the strength of its own `count`.
   defp expand_run(%{count: _count, offset: offset} = run, _mdat_start, mdat_end)
