@@ -164,8 +164,11 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
 
   defp handle_box(box_name, box, %{fsm_state: :reading_fragment_data} = engine) do
     case box_name do
+      # a free/skip/unknown box between `moof` and `mdat` shifts where the mdat content starts,
+      # and sample offsets are counted from the start of the `moof`
       box_type when box_type in @ignored_boxes ->
-        {[], engine}
+        {[],
+         Map.update!(engine, :how_many_segment_bytes_read, &(&1 + box.header_size + box.size))}
 
       :mdat ->
         engine =

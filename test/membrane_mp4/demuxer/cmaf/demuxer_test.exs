@@ -302,6 +302,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     defp gated_off_moof(sample_count, opts \\ []) do
       size = Keyword.get(opts, :default_sample_size, 4)
       data_offset = Keyword.get(opts, :data_offset, :auto)
+      trailing_bytes = Keyword.get(opts, :trailing_bytes, 0)
 
       build = fn off ->
         trun = box("trun", <<0::8, 0x1::24, sample_count::32, off::signed-32>>)
@@ -310,7 +311,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
 
       case data_offset do
         # first byte of the mdat content, counting from the start of the moof
-        :auto -> build.(byte_size(build.(0)) + 8)
+        :auto -> build.(byte_size(build.(0)) + trailing_bytes + 8)
         off -> build.(off)
       end
     end
@@ -342,6 +343,15 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
       mdat = box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3>>)
 
       assert payloads(demux(moof <> mdat)) == [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>, <<3, 3, 3, 3>>]
+    end
+
+    test "a free box between moof and mdat shifts the sample offsets" do
+      free = box("free", <<0, 0, 0, 0>>)
+      moof = gated_off_moof(3, trailing_bytes: byte_size(free))
+      mdat = box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3>>)
+
+      assert payloads(demux(moof <> free <> mdat)) ==
+               [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>, <<3, 3, 3, 3>>]
     end
 
     test "rejects a run whose sample size is zero (would otherwise be unbounded)" do
