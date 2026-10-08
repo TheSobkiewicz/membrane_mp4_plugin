@@ -12,6 +12,18 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
           track_id: non_neg_integer()
         }
 
+  # A compact run of identical samples (see `handle_trun/3`), sorted among plain
+  # `sample_description`s by its first `offset`.
+  @type sample_run :: %{
+          offset: non_neg_integer(),
+          ts: non_neg_integer(),
+          count: non_neg_integer(),
+          size: pos_integer(),
+          duration: non_neg_integer(),
+          composition_offset: non_neg_integer(),
+          track_id: non_neg_integer()
+        }
+
   @spec read_moov(moov_box :: map()) ::
           {%{non_neg_integer() => struct()}, %{non_neg_integer() => pos_integer()}}
   def read_moov(%{children: boxes}) do
@@ -41,7 +53,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
     {tracks_info, timescales}
   end
 
-  @spec get_samples_info(moof_box :: map()) :: [sample_description()]
+  @spec get_samples_info(moof_box :: map()) :: [sample_description() | sample_run()]
   def get_samples_info(%{children: boxes}) do
     boxes
     |> Enum.filter(fn {type, _content} -> type == :traf end)
@@ -74,6 +86,42 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
       end)
 
     samples
+  end
+
+  # `ParseHelper` stops materializing a counted list whose items carry no bits, so a `trun` with
+  # every per-sample field gated off parses to `samples: []` with the declared count left in
+  # `sample_count`. All its samples are identical, so they are kept as one compact run descriptor
+  # that `Engine.read_mdat/2` expands against the `mdat` that has to back it - the declared count
+  # never drives an allocation on its own. Note that only `tfhd` defaults are read here, not
+  # `mvex`/`trex` ones.
+  defp handle_trun(%{fields: %{samples: []} = fields}, ts_acc, track_description) do
+    count = fields.sample_count
+    offset = track_description.base_data_offset + fields.data_offset
+    size = track_description.default_sample_size
+    duration = track_description.default_sample_duration
+
+    cond do
+      count == 0 ->
+        {[], {offset, ts_acc}}
+
+      # Without a positive size every sample would sit at the same offset, so no amount of `mdat`
+      # bytes could bound the run - reject instead of letting `count` drive the expansion.
+      is_nil(size) or size <= 0 ->
+        raise "Malformed trun: #{count} samples declared with sample size #{inspect(size)}"
+
+      true ->
+        run = %{
+          offset: offset,
+          ts: ts_acc,
+          count: count,
+          size: size,
+          duration: duration,
+          composition_offset: 0,
+          track_id: track_description.track_id
+        }
+
+        {[run], {offset + count * size, ts_acc + count * duration}}
+    end
   end
 
   defp handle_trun(

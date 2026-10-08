@@ -282,6 +282,90 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     assert a == b
   end
 
+  describe "trun run with all per-sample fields gated off (relying on tfhd defaults)" do
+    @audio_header File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+
+    defp box(type, body), do: <<8 + byte_size(body)::32, type::binary, body::binary>>
+
+    # track 1, tfhd flags 0x18 (default duration + size), or 0x08 when `size` is nil
+    defp traf_header(size) do
+      tfhd_body =
+        if size,
+          do: <<0::8, 0x18::24, 1::32, 1000::32, size::32>>,
+          else: <<0::8, 0x08::24, 1::32, 1000::32>>
+
+      box("tfhd", tfhd_body) <> box("tfdt", <<1::8, 0::24, 0::64>>)
+    end
+
+    # moof whose trun has fo_flags = 0x1 (only data_offset), so every per-sample field is absent
+    # and the samples fall back to the tfhd defaults.
+    defp gated_off_moof(sample_count, opts \\ []) do
+      size = Keyword.get(opts, :default_sample_size, 4)
+      data_offset = Keyword.get(opts, :data_offset, :auto)
+
+      build = fn off ->
+        trun = box("trun", <<0::8, 0x1::24, sample_count::32, off::signed-32>>)
+        box("moof", box("traf", traf_header(size) <> trun))
+      end
+
+      case data_offset do
+        # first byte of the mdat content, counting from the start of the moof
+        :auto -> build.(byte_size(build.(0)) + 8)
+        off -> build.(off)
+      end
+    end
+
+    defp demux(fragment) do
+      Engine.new()
+      |> Engine.feed!(@audio_header)
+      |> Engine.feed!(fragment)
+      |> Engine.pop_samples()
+    end
+
+    defp payloads({:ok, samples, _engine}), do: Enum.map(samples, & &1.payload)
+
+    test "rejects a huge declared count the received mdat cannot back" do
+      moof = gated_off_moof(0xFFFFFFFF)
+      mdat = box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2>>)
+
+      # Pre-fix this allocated 4 billion entries while parsing; the timeout trips if that returns.
+      task =
+        Task.async(fn ->
+          assert_raise RuntimeError, ~r/Malformed fragment/, fn -> demux(moof <> mdat) end
+        end)
+
+      Task.await(task, 3000)
+    end
+
+    test "a small legitimate run demuxes to the same payloads a literal list would" do
+      moof = gated_off_moof(3)
+      mdat = box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3>>)
+
+      assert payloads(demux(moof <> mdat)) == [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>, <<3, 3, 3, 3>>]
+    end
+
+    test "rejects a run whose sample size is zero (would otherwise be unbounded)" do
+      moof = gated_off_moof(0xFFFFFFFF, default_sample_size: 0)
+      mdat = box("mdat", <<0>>)
+
+      assert_raise RuntimeError, ~r/sample size 0/, fn -> demux(moof <> mdat) end
+    end
+
+    test "rejects a run whose data_offset points before the current mdat content" do
+      moof = gated_off_moof(0xFFFFFFFF, default_sample_size: 1, data_offset: -2_000_000_000)
+      mdat = box("mdat", <<0>>)
+
+      assert_raise RuntimeError, ~r/outside the received mdat/, fn -> demux(moof <> mdat) end
+    end
+
+    test "an empty run (sample_count 0) with no default size is a no-op, not a crash" do
+      moof = gated_off_moof(0, default_sample_size: nil)
+      mdat = box("mdat", <<>>)
+
+      assert {:ok, [], _engine} = demux(moof <> mdat)
+    end
+  end
+
   defp get_files(directory_path, regexes) do
     directory_path
     |> Path.expand()

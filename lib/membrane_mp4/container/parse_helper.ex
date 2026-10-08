@@ -206,6 +206,13 @@ defmodule Membrane.MP4.Container.ParseHelper do
     1..length//1
     |> Enum.reduce_while({[], data, context}, fn _i, {parsed_terms, data, context} ->
       case parse_field(data, {name, type}, context) do
+        # An item that consumes no bits carries no information and would repeat identically for
+        # the rest of `length`, which comes straight from the stream (`trun`'s `sample_count`) -
+        # stop instead of materializing `length` copies and running out of memory. Consumers read
+        # the declared count from the field that holds it.
+        {:ok, {_term, rest}, _context} when bit_size(rest) == bit_size(data) ->
+          {:halt, {parsed_terms, rest, context}}
+
         {:ok, {term, rest}, new_context} ->
           {:cont, {[term | parsed_terms], rest, new_context}}
 
