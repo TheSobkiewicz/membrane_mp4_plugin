@@ -191,11 +191,13 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
   end
 
   defp read_mdat(mdat_box, engine) do
+    mdat_start = engine.how_many_segment_bytes_read
+    mdat_end = mdat_start + byte_size(mdat_box.content)
+
     {this_mdat_samples, rest_of_samples_info} =
-      Enum.split_while(
-        engine.samples_info,
-        &(&1.offset - engine.how_many_segment_bytes_read < byte_size(mdat_box.content))
-      )
+      engine.samples_info
+      |> Enum.flat_map(&expand_run(&1, mdat_start, mdat_end))
+      |> Enum.split_while(&(&1.offset < mdat_end))
 
     emsg_metadata =
       resolve_emsg_metadata(engine.pending_emsg, this_mdat_samples, engine.last_timescales)
@@ -207,7 +209,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
         payload =
           mdat_box.content
           |> :erlang.binary_part(
-            sample.offset - engine.how_many_segment_bytes_read,
+            sample.offset - mdat_start,
             sample.size
           )
 
@@ -232,6 +234,29 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
 
     {samples, %{engine | samples_info: rest_of_samples_info}}
   end
+
+  # a run is expanded only against the mdat that has to back it, never on `count` alone
+  defp expand_run(%{count: _count, offset: offset} = run, _mdat_start, mdat_end)
+       when offset >= mdat_end do
+    [run]
+  end
+
+  defp expand_run(%{count: count} = run, mdat_start, mdat_end) do
+    if run.offset < mdat_start or run.offset + count * run.size > mdat_end do
+      raise """
+      Malformed fragment: trun declares #{count} samples of #{run.size} B at offset \
+      #{run.offset}, outside the received mdat content (#{mdat_start}..#{mdat_end})
+      """
+    end
+
+    sample = Map.delete(run, :count)
+
+    Enum.map(0..(count - 1)//1, fn n ->
+      %{sample | offset: sample.offset + n * sample.size, ts: sample.ts + n * sample.duration}
+    end)
+  end
+
+  defp expand_run(sample, _mdat_start, _mdat_end), do: [sample]
 
   defp reject_unsupported_tracks_info(tracks_info) do
     Map.reject(tracks_info, fn {_track_id, track_format} -> track_format == nil end)
@@ -260,6 +285,8 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
        ) do
     %{emsg_pts_ms: pts_ms, emsg_message_data: data}
   end
+
+  defp resolve_emsg_metadata(%{emsg_pts: {:delta, _delta, _timescale}}, [], _timescales), do: %{}
 
   # the emsg_pts is resolved relatively to the timestamp of the first sample
   # from the next moof box
