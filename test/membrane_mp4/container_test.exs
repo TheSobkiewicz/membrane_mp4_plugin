@@ -11,6 +11,21 @@ defmodule Membrane.MP4.ContainerTest do
     assert boxes |> Container.serialize!() == data
   end
 
+  defp gated_off_moof(sample_count) do
+    trun = <<20::32, "trun", 0::8, 0x1::24, sample_count::32, 0::signed-32>>
+    traf = <<8 + byte_size(trun)::32, "traf", trun::binary>>
+    <<8 + byte_size(traf)::32, "moof", traf::binary>>
+  end
+
+  defp sized_list_schema(entry) do
+    [
+      test: [
+        version: 0,
+        fields: [count: {:uint32, store: :count}, table: {:list, entry, length: :count}]
+      ]
+    ]
+  end
+
   defp test_partial(file, boxes_expected) do
     data = @isom_fixtures |> Path.join(file) |> File.read!()
     data_size = byte_size(data) - 1
@@ -120,38 +135,24 @@ defmodule Membrane.MP4.ContainerTest do
     assert_raise RuntimeError, ~r/Error serializing MP4/, fn -> Container.serialize!(mp4) end
   end
 
-  describe "counted list (trun samples) with all per-sample fields gated off" do
-    defp box(type, body), do: <<8 + byte_size(body)::32, type::binary, body::binary>>
+  test "trun with no per-sample fields parses to no samples and round-trips" do
+    data = gated_off_moof(5)
+    {boxes, <<>>} = Container.parse!(data)
+    [{:moof, moof}] = boxes
+    fields = moof.children[:traf].children[:trun].fields
 
-    defp gated_off_moof(sample_count) do
-      trun = box("trun", <<0::8, 0x1::24, sample_count::32, 0::signed-32>>)
-      box("moof", box("traf", trun))
+    assert fields.samples == []
+    assert fields.sample_count == 5
+    assert Container.serialize!(boxes) == data
+  end
+
+  test "sized list whose entries could differ in width is rejected by the schema" do
+    assert_raise RuntimeError, ~r/must not store/, fn ->
+      Container.Schema.parse(sized_list_schema({:uint32, store: :whatever}))
     end
 
-    defp parse_trun(data) do
-      {[{:moof, moof}], <<>>} = Container.parse!(data)
-      moof.children[:traf].children[:trun]
-    end
-
-    test "parses to no items, with the declared count left in sample_count" do
-      fields = parse_trun(gated_off_moof(5)).fields
-
-      assert fields.samples == []
-      assert fields.sample_count == 5
-    end
-
-    test "round-trips back to identical bytes" do
-      data = gated_off_moof(5)
-      {boxes, <<>>} = Container.parse!(data)
-      assert Container.serialize!(boxes) == data
-    end
-
-    test "a huge sample_count neither allocates nor is lost" do
-      task = Task.async(fn -> parse_trun(gated_off_moof(0xFFFFFFFF)).fields end)
-      fields = Task.await(task, 2000)
-
-      assert fields.samples == []
-      assert fields.sample_count == 0xFFFFFFFF
+    assert_raise RuntimeError, ~r/is not of a fixed width/, fn ->
+      Container.Schema.parse(sized_list_schema(:bin))
     end
   end
 end

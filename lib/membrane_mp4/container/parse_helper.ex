@@ -196,35 +196,50 @@ defmodule Membrane.MP4.Container.ParseHelper do
   end
 
   defp parse_field(data, {name, {:list, type, length: length_key}}, context) do
-    length = Map.fetch!(context, length_key)
-    parse_sized_list(data, name, type, length, context)
+    count = Map.fetch!(context, length_key)
+    parse_sized_list(data, name, type, entry_bit_width(type, context), count, context)
   end
 
   defp parse_field(data, {name, _type}, _context), do: parse_field_error(data, name)
 
-  defp parse_sized_list(data, name, type, length, context) do
-    1..length//1
-    |> Enum.reduce_while({[], data, context}, fn _i, {parsed_terms, data, context} ->
-      case parse_field(data, {name, type}, context) do
-        # a zero-width item would repeat `length` times (the stream's own count) - stop instead
-        {:ok, {_term, rest}, _context} when bit_size(rest) == bit_size(data) ->
-          {:halt, {parsed_terms, rest, context}}
+  # a 0-bit-wide entry has no bytes behind it, so the declared count must not allocate
+  defp parse_sized_list(data, _name, _type, 0, _count, context), do: {:ok, {[], data}, context}
 
-        {:ok, {term, rest}, new_context} ->
-          {:cont, {[term | parsed_terms], rest, new_context}}
+  defp parse_sized_list(data, name, type, width, count, context) do
+    size = width * count
 
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    end)
-    |> case do
-      {:error, _reason} = error ->
-        error
+    case data do
+      <<entries::bitstring-size(^size), rest::bitstring>> ->
+        {:ok, {parse_entries(entries, name, type, context, []), rest}, context}
 
-      {terms, rest, context} ->
-        {:ok, {Enum.reverse(terms), rest}, context}
+      _too_short ->
+        parse_field_error(data, name)
     end
   end
+
+  defp parse_entries(<<>>, _name, _type, _context, acc), do: Enum.reverse(acc)
+
+  defp parse_entries(entries, name, type, context, acc) do
+    {:ok, {entry, rest}, ^context} = parse_field(entries, {name, type}, context)
+    parse_entries(rest, name, type, context, [entry | acc])
+  end
+
+  defp entry_bit_width(fields, context) when is_list(fields) do
+    fields
+    |> Enum.map(fn
+      {:reserved, reserved} -> bit_size(reserved)
+      {_name, type} -> entry_bit_width(type, context)
+    end)
+    |> Enum.sum()
+  end
+
+  defp entry_bit_width({type, when: when_clause}, context) do
+    if handle_when(when_clause, context), do: entry_bit_width(type, context), else: 0
+  end
+
+  defp entry_bit_width({type, size}, _context) when type in [:int, :uint, :bin, :str], do: size
+
+  defp entry_bit_width({:fp, int_size, frac_size}, _context), do: int_size + frac_size
 
   defp parse_field_error(data, name, context \\ [])
 
