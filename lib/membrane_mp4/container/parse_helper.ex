@@ -210,18 +210,22 @@ defmodule Membrane.MP4.Container.ParseHelper do
 
     case data do
       <<entries::bitstring-size(^size), rest::bitstring>> ->
-        {:ok, {parse_entries(entries, name, type, context, []), rest}, context}
+        with {:ok, entries} <- parse_entries(entries, name, type, context, []) do
+          {:ok, {entries, rest}, context}
+        end
 
       _too_short ->
         parse_field_error(data, name)
     end
   end
 
-  defp parse_entries(<<>>, _name, _type, _context, acc), do: Enum.reverse(acc)
+  defp parse_entries(<<>>, _name, _type, _context, acc), do: {:ok, Enum.reverse(acc)}
 
   defp parse_entries(entries, name, type, context, acc) do
-    {:ok, {entry, rest}, ^context} = parse_field(entries, {name, type}, context)
-    parse_entries(rest, name, type, context, [entry | acc])
+    case parse_field(entries, {name, type}, context) do
+      {:ok, {entry, rest}, ^context} -> parse_entries(rest, name, type, context, [entry | acc])
+      {:error, _reason} = error -> error
+    end
   end
 
   defp entry_bit_width(fields, context) when is_list(fields) do
