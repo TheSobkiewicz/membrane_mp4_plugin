@@ -165,7 +165,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
   defp handle_box(box_name, box, %{fsm_state: :reading_fragment_data} = engine) do
     case box_name do
       box_type when box_type in @ignored_boxes ->
-        {[], engine}
+        {[], consume_bytes(engine, box)}
 
       :mdat ->
         engine =
@@ -188,6 +188,12 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
         Encountered box type: #{inspect(box_name)}
         """
     end
+  end
+
+  # a trun's data_offset counts from the start of the moof, so every byte consumed
+  # after it has to be counted too, whether or not this demuxer reads the box
+  defp consume_bytes(engine, box) do
+    Map.update!(engine, :how_many_segment_bytes_read, &(&1 + box.size + box.header_size))
   end
 
   defp read_mdat(mdat_box, engine) do

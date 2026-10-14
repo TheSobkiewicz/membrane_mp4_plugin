@@ -146,6 +146,15 @@ defmodule Membrane.MP4.ContainerTest do
     assert Container.serialize!(boxes) == data
   end
 
+  test "a malformed entry in a sized list is an error, not a raise" do
+    schema = Container.Schema.parse(sized_list_schema([{:reserved, <<0>>}, v: :uint8]))
+    body = <<2::32, 0, 1, 0xFF, 2>>
+    data = <<8 + byte_size(body)::32, "test", body::binary>>
+
+    assert Container.parse(data, schema) ==
+             {:error, box: :test, field: :table, field: :reserved, expected: <<0>>}
+  end
+
   test "sized list whose entries could differ in width is rejected by the schema" do
     assert_raise RuntimeError, ~r/must not store/, fn ->
       Container.Schema.parse(sized_list_schema({:uint32, store: :whatever}))

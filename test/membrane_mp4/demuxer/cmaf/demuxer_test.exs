@@ -293,6 +293,17 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
       assert Enum.map(samples, & &1.payload) == [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>, <<3, 3, 3, 3>>]
     end
 
+    test "demuxes a run when a free box sits between the moof and the mdat" do
+      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      moof = gated_off_moof(3, data_offset: byte_size(gated_off_moof(3)) + 16)
+      fragment = moof <> box("free", <<>>) <> box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3>>)
+
+      engine = Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
+      {:ok, samples, _engine} = Engine.pop_samples(engine)
+
+      assert Enum.map(samples, & &1.payload) == [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>, <<3, 3, 3, 3>>]
+    end
+
     test "rejects a declared count the received mdat cannot back" do
       header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
       fragment = gated_off_moof(0xFFFFFFFF) <> box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2>>)
