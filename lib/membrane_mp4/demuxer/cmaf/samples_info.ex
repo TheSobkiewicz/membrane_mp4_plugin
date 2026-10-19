@@ -10,8 +10,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
           required(:composition_offset) => non_neg_integer(),
           required(:offset) => non_neg_integer(),
           required(:track_id) => non_neg_integer(),
-          # set only on a run standing for that many identical samples, expanded by the engine
-          optional(:count) => pos_integer()
+          required(:count) => non_neg_integer()
         }
 
   @spec read_moov(moov_box :: map()) ::
@@ -85,26 +84,21 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
     size = track_description.default_sample_size
     duration = track_description.default_sample_duration
 
-    cond do
-      count == 0 ->
-        {[], {offset, ts_acc}}
-
-      is_nil(size) or size <= 0 ->
-        raise "Malformed trun: #{count} samples declared with sample size #{inspect(size)}"
-
-      true ->
-        run = %{
-          offset: offset,
-          ts: ts_acc,
-          count: count,
-          size: size,
-          duration: duration,
-          composition_offset: 0,
-          track_id: track_description.track_id
-        }
-
-        {[run], {offset + count * size, ts_acc + count * duration}}
+    if count > 0 and (is_nil(size) or size <= 0) do
+      raise "Malformed trun: #{count} samples declared with sample size #{inspect(size)}"
     end
+
+    run = %{
+      offset: offset,
+      ts: ts_acc,
+      count: count,
+      size: size || 0,
+      duration: duration,
+      composition_offset: 0,
+      track_id: track_description.track_id
+    }
+
+    {[run], {offset + count * (size || 0), ts_acc + count * duration}}
   end
 
   defp handle_trun(
@@ -125,7 +119,8 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
            size: size,
            composition_offset: sample[:sample_composition_time_offset] || 0,
            offset: size_acc,
-           track_id: track_description.track_id
+           track_id: track_description.track_id,
+           count: 1
          }, {size_acc + size, ts_acc + duration}}
       end
     )
