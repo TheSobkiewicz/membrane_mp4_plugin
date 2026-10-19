@@ -292,8 +292,6 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
     %{emsg_pts_ms: pts_ms, emsg_message_data: data}
   end
 
-  defp resolve_emsg_metadata(%{emsg_pts: {:delta, _delta, _timescale}}, [], _timescales), do: %{}
-
   # the emsg_pts is resolved relatively to the timestamp of the first sample
   # from the next moof box
   defp resolve_emsg_metadata(
