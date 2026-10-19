@@ -157,11 +157,11 @@ defmodule Membrane.MP4.ContainerTest do
 
   test "sized list whose entries could differ in width is rejected by the schema" do
     assert_raise RuntimeError, ~r/must not store/, fn ->
-      Container.Schema.parse(sized_list_schema({:uint32, store: :whatever}))
+      {:uint32, store: :whatever} |> sized_list_schema() |> Container.Schema.parse()
     end
 
     assert_raise RuntimeError, ~r/is not of a fixed width/, fn ->
-      Container.Schema.parse(sized_list_schema(:bin))
+      :bin |> sized_list_schema() |> Container.Schema.parse()
     end
   end
 end

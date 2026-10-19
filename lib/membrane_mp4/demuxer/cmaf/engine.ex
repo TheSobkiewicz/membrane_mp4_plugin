@@ -164,8 +164,11 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
 
   defp handle_box(box_name, box, %{fsm_state: :reading_fragment_data} = engine) do
     case box_name do
+      # a trun's data_offset counts from the start of the moof, so every byte consumed after
+      # it has to be counted too, whether or not it is read here
       box_type when box_type in @ignored_boxes ->
-        {[], consume_bytes(engine, box)}
+        {[],
+         Map.update!(engine, :how_many_segment_bytes_read, &(&1 + box.size + box.header_size))}
 
       :mdat ->
         engine =
@@ -188,12 +191,6 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
         Encountered box type: #{inspect(box_name)}
         """
     end
-  end
-
-  # a trun's data_offset counts from the start of the moof, so every byte consumed
-  # after it has to be counted too, whether or not this demuxer reads the box
-  defp consume_bytes(engine, box) do
-    Map.update!(engine, :how_many_segment_bytes_read, &(&1 + box.size + box.header_size))
   end
 
   defp read_mdat(mdat_box, engine) do
@@ -247,22 +244,21 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
     [run]
   end
 
-  defp expand_run(%{count: count} = run, mdat_start, mdat_end) do
-    if run.offset < mdat_start or run.offset + count * run.size > mdat_end do
-      raise """
-      Malformed fragment: trun declares #{count} samples of #{run.size} B at offset \
-      #{run.offset}, outside the received mdat content (#{mdat_start}..#{mdat_end})
-      """
-    end
+  defp expand_run(%{count: count} = run, mdat_start, mdat_end)
+       when run.offset < mdat_start or run.offset + count * run.size > mdat_end do
+    raise """
+    Malformed fragment: trun declares #{count} samples of #{run.size} B at offset \
+    #{run.offset}, outside the received mdat content (#{mdat_start}..#{mdat_end})
+    """
+  end
 
+  defp expand_run(%{count: count} = run, _mdat_start, _mdat_end) do
     sample = Map.delete(run, :count)
 
     Enum.map(0..(count - 1)//1, fn n ->
       %{sample | offset: sample.offset + n * sample.size, ts: sample.ts + n * sample.duration}
     end)
   end
-
-  defp expand_run(sample, _mdat_start, _mdat_end), do: [sample]
 
   defp reject_unsupported_tracks_info(tracks_info) do
     Map.reject(tracks_info, fn {_track_id, track_format} -> track_format == nil end)

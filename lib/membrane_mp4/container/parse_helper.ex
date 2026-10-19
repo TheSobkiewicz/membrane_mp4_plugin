@@ -230,12 +230,11 @@ defmodule Membrane.MP4.Container.ParseHelper do
 
   defp entry_bit_width(fields, context) when is_list(fields) do
     fields
-    |> Enum.map(fn
-      {:reserved, reserved} -> bit_size(reserved)
-      {_name, type} -> entry_bit_width(type, context)
-    end)
+    |> Enum.map(&entry_bit_width(&1, context))
     |> Enum.sum()
   end
+
+  defp entry_bit_width({:reserved, reserved}, _context), do: bit_size(reserved)
 
   defp entry_bit_width({type, when: when_clause}, context) do
     if handle_when(when_clause, context), do: entry_bit_width(type, context), else: 0
@@ -244,6 +243,8 @@ defmodule Membrane.MP4.Container.ParseHelper do
   defp entry_bit_width({type, size}, _context) when type in [:int, :uint, :bin, :str], do: size
 
   defp entry_bit_width({:fp, int_size, frac_size}, _context), do: int_size + frac_size
+
+  defp entry_bit_width({_name, type}, context), do: entry_bit_width(type, context)
 
   defp parse_field_error(data, name, context \\ [])
 
