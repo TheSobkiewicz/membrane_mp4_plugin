@@ -329,7 +329,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
         gated_off_moof(0xFFFFFFFF, default_sample_size: 1, data_offset: -2_000_000_000) <>
           box("mdat", <<0>>)
 
-      assert_raise RuntimeError, ~r/outside the received mdat/, fn ->
+      assert_raise RuntimeError, ~r/outside the available mdat/, fn ->
         Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
       end
     end
@@ -341,6 +341,41 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
       engine = Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
 
       assert {:ok, [], _engine} = Engine.pop_samples(engine)
+    end
+
+    test "rejects a second run that claims bytes an earlier run in the same traf already did" do
+      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+
+      moof = fn offset ->
+        trun = box("trun", <<0::8, 0x1::24, 1000::32, offset::signed-32>>)
+        box("moof", box("traf", traf_header(1) <> trun <> trun))
+      end
+
+      offset = byte_size(moof.(0)) + 8
+      fragment = moof.(offset) <> box("mdat", :binary.copy(<<0>>, 1000))
+
+      assert_raise RuntimeError, ~r/Malformed fragment/, fn ->
+        Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
+      end
+    end
+
+    test "demuxes two non-overlapping runs declared in the same traf" do
+      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+
+      moof = fn base ->
+        trun1 = box("trun", <<0::8, 0x1::24, 2::32, base::signed-32>>)
+        trun2 = box("trun", <<0::8, 0x1::24, 2::32, base + 8::signed-32>>)
+        box("moof", box("traf", traf_header(4) <> trun1 <> trun2))
+      end
+
+      base = byte_size(moof.(0)) + 8
+      mdat = box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4>>)
+
+      engine = Engine.new() |> Engine.feed!(header) |> Engine.feed!(moof.(base) <> mdat)
+      {:ok, samples, _engine} = Engine.pop_samples(engine)
+
+      assert Enum.map(samples, & &1.payload) ==
+               [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>, <<3, 3, 3, 3>>, <<4, 4, 4, 4>>]
     end
   end
 

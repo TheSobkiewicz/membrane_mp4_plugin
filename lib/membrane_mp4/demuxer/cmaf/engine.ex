@@ -197,10 +197,11 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
     mdat_start = engine.how_many_segment_bytes_read
     mdat_end = mdat_start + byte_size(mdat_box.content)
 
+    {expanded, _cursor} =
+      Enum.flat_map_reduce(engine.samples_info, mdat_start, &expand_run(&1, &2, mdat_end))
+
     {this_mdat_samples, rest_of_samples_info} =
-      engine.samples_info
-      |> Enum.flat_map(&expand_run(&1, mdat_start, mdat_end))
-      |> Enum.split_while(&(&1.offset < mdat_end))
+      Enum.split_while(expanded, &(&1.offset < mdat_end))
 
     emsg_metadata =
       resolve_emsg_metadata(engine.pending_emsg, this_mdat_samples, engine.last_timescales)
@@ -238,26 +239,30 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
     {samples, %{engine | samples_info: rest_of_samples_info}}
   end
 
-  # a run is expanded only against the mdat that has to back it, never on `count` alone
-  defp expand_run(%{count: _count, offset: offset} = run, _mdat_start, mdat_end)
+  # a run is expanded only against the mdat bytes not already claimed by an earlier run, never
+  # on `count` alone - `cursor` is the first byte of this mdat no prior run has consumed yet
+  defp expand_run(%{count: _count, offset: offset} = run, cursor, mdat_end)
        when offset >= mdat_end do
-    [run]
+    {[run], cursor}
   end
 
-  defp expand_run(%{count: count} = run, mdat_start, mdat_end)
-       when run.offset < mdat_start or run.offset + count * run.size > mdat_end do
+  defp expand_run(%{count: count} = run, cursor, mdat_end)
+       when run.offset < cursor or run.offset + count * run.size > mdat_end do
     raise """
     Malformed fragment: trun declares #{count} samples of #{run.size} B at offset \
-    #{run.offset}, outside the received mdat content (#{mdat_start}..#{mdat_end})
+    #{run.offset}, outside the available mdat content (#{cursor}..#{mdat_end})
     """
   end
 
-  defp expand_run(%{count: count} = run, _mdat_start, _mdat_end) do
+  defp expand_run(%{count: count} = run, _cursor, _mdat_end) do
     sample = Map.delete(run, :count)
 
-    Enum.map(0..(count - 1)//1, fn n ->
-      %{sample | offset: sample.offset + n * sample.size, ts: sample.ts + n * sample.duration}
-    end)
+    samples =
+      Enum.map(0..(count - 1)//1, fn n ->
+        %{sample | offset: sample.offset + n * sample.size, ts: sample.ts + n * sample.duration}
+      end)
+
+    {samples, run.offset + count * run.size}
   end
 
   defp reject_unsupported_tracks_info(tracks_info) do
