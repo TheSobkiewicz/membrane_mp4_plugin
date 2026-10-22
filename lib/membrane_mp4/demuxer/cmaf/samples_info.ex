@@ -4,13 +4,13 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
   alias Membrane.MP4.MovieBox.SampleTableBox
 
   @type sample_description :: %{
-          required(:duration) => non_neg_integer(),
-          required(:ts) => non_neg_integer(),
-          required(:size) => non_neg_integer(),
-          required(:composition_offset) => non_neg_integer(),
-          required(:offset) => non_neg_integer(),
-          required(:track_id) => non_neg_integer(),
-          required(:count) => non_neg_integer()
+          duration: non_neg_integer(),
+          ts: non_neg_integer(),
+          size: non_neg_integer(),
+          composition_offset: non_neg_integer(),
+          offset: non_neg_integer(),
+          track_id: non_neg_integer(),
+          count: non_neg_integer()
         }
 
   @spec read_moov(moov_box :: map()) ::
@@ -77,16 +77,21 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
     samples
   end
 
+  defp handle_trun(
+         %{fields: %{samples: [], sample_count: count}},
+         _ts_acc,
+         %{default_sample_size: size}
+       )
+       when count > 0 and (is_nil(size) or size <= 0) do
+    raise "Malformed trun: #{count} samples declared with sample size #{inspect(size)}"
+  end
+
   # every per-sample field gated off parses to `samples: []`; kept as one run, not `count` of them
   defp handle_trun(%{fields: %{samples: []} = fields}, ts_acc, track_description) do
     count = fields.sample_count
     offset = track_description.base_data_offset + fields.data_offset
     size = track_description.default_sample_size
     duration = track_description.default_sample_duration
-
-    if count > 0 and (is_nil(size) or size <= 0) do
-      raise "Malformed trun: #{count} samples declared with sample size #{inspect(size)}"
-    end
 
     run = %{
       offset: offset,
