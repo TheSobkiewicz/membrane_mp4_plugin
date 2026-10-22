@@ -197,11 +197,11 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
     mdat_start = engine.how_many_segment_bytes_read
     mdat_end = mdat_start + byte_size(mdat_box.content)
 
-    {expanded, _cursor} =
-      Enum.flat_map_reduce(engine.samples_info, mdat_start, &expand_run(&1, &2, mdat_end))
+    {this_mdat_runs, rest_of_samples_info} =
+      Enum.split_while(engine.samples_info, &(&1.offset < mdat_end))
 
-    {this_mdat_samples, rest_of_samples_info} =
-      Enum.split_while(expanded, &(&1.offset < mdat_end))
+    {this_mdat_samples, _cursor} =
+      Enum.flat_map_reduce(this_mdat_runs, mdat_start, &expand_run(&1, &2, mdat_end))
 
     emsg_metadata =
       resolve_emsg_metadata(engine.pending_emsg, this_mdat_samples, engine.last_timescales)
@@ -237,13 +237,6 @@ defmodule Membrane.MP4.Demuxer.CMAF.Engine do
       end)
 
     {samples, %{engine | samples_info: rest_of_samples_info}}
-  end
-
-  # a run is expanded only against the mdat bytes not already claimed by an earlier run, never
-  # on `count` alone - `cursor` is the first byte of this mdat no prior run has consumed yet
-  defp expand_run(%{count: _count, offset: offset} = run, cursor, mdat_end)
-       when offset >= mdat_end do
-    {[run], cursor}
   end
 
   defp expand_run(%{count: count} = run, cursor, mdat_end)

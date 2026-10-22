@@ -283,8 +283,10 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
   end
 
   describe "trun run with all per-sample fields gated off" do
+    @audio_header File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+
     test "demuxes a small run to the same payloads a literal sample list would" do
-      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      header = @audio_header
       fragment = gated_off_moof(3) <> box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3>>)
 
       engine = Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
@@ -294,7 +296,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     end
 
     test "demuxes a run when a free box sits between the moof and the mdat" do
-      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      header = @audio_header
       moof = gated_off_moof(3, data_offset: byte_size(gated_off_moof(3)) + 16)
       fragment = moof <> box("free", <<>>) <> box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3>>)
 
@@ -305,7 +307,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     end
 
     test "rejects a declared count the received mdat cannot back" do
-      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      header = @audio_header
       fragment = gated_off_moof(0xFFFFFFFF) <> box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2>>)
 
       assert_raise RuntimeError, ~r/Malformed fragment/, fn ->
@@ -314,7 +316,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     end
 
     test "rejects a run whose sample size is zero" do
-      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      header = @audio_header
       fragment = gated_off_moof(0xFFFFFFFF, default_sample_size: 0) <> box("mdat", <<0>>)
 
       assert_raise RuntimeError, ~r/sample size 0/, fn ->
@@ -323,7 +325,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     end
 
     test "rejects a run whose data_offset points before the current mdat content" do
-      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      header = @audio_header
 
       fragment =
         gated_off_moof(0xFFFFFFFF, default_sample_size: 1, data_offset: -2_000_000_000) <>
@@ -335,7 +337,7 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     end
 
     test "treats a run of no samples as a no-op" do
-      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      header = @audio_header
       fragment = gated_off_moof(0, default_sample_size: nil) <> box("mdat", <<>>)
 
       engine = Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
@@ -344,15 +346,14 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     end
 
     test "rejects a second run that claims bytes an earlier run in the same traf already did" do
-      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      header = @audio_header
 
-      moof = fn offset ->
-        trun = box("trun", <<0::8, 0x1::24, 1000::32, offset::signed-32>>)
-        box("moof", box("traf", traf_header(1) <> trun <> trun))
-      end
+      trun_size = byte_size(box("trun", <<0::8, 0x1::24, 0::32, 0::signed-32>>))
+      offset = byte_size(box("moof", box("traf", traf_header(1)))) + 2 * trun_size + 8
 
-      offset = byte_size(moof.(0)) + 8
-      fragment = moof.(offset) <> box("mdat", :binary.copy(<<0>>, 1000))
+      trun = box("trun", <<0::8, 0x1::24, 1000::32, offset::signed-32>>)
+      moof = box("moof", box("traf", traf_header(1) <> trun <> trun))
+      fragment = moof <> box("mdat", :binary.copy(<<0>>, 1000))
 
       assert_raise RuntimeError, ~r/Malformed fragment/, fn ->
         Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
@@ -360,18 +361,17 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     end
 
     test "demuxes two non-overlapping runs declared in the same traf" do
-      header = File.read!("test/fixtures/cmaf/ref_audio_header.mp4")
+      header = @audio_header
 
-      moof = fn base ->
-        trun1 = box("trun", <<0::8, 0x1::24, 2::32, base::signed-32>>)
-        trun2 = box("trun", <<0::8, 0x1::24, 2::32, base + 8::signed-32>>)
-        box("moof", box("traf", traf_header(4) <> trun1 <> trun2))
-      end
+      trun_size = byte_size(box("trun", <<0::8, 0x1::24, 0::32, 0::signed-32>>))
+      base = byte_size(box("moof", box("traf", traf_header(4)))) + 2 * trun_size + 8
 
-      base = byte_size(moof.(0)) + 8
+      trun1 = box("trun", <<0::8, 0x1::24, 2::32, base::signed-32>>)
+      trun2 = box("trun", <<0::8, 0x1::24, 2::32, base + 8::signed-32>>)
+      moof = box("moof", box("traf", traf_header(4) <> trun1 <> trun2))
       mdat = box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4>>)
 
-      engine = Engine.new() |> Engine.feed!(header) |> Engine.feed!(moof.(base) <> mdat)
+      engine = Engine.new() |> Engine.feed!(header) |> Engine.feed!(moof <> mdat)
       {:ok, samples, _engine} = Engine.pop_samples(engine)
 
       assert Enum.map(samples, & &1.payload) ==
