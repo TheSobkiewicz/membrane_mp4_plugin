@@ -86,7 +86,10 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
     raise "Malformed trun: #{count} samples declared with sample size #{inspect(size)}"
   end
 
-  # every per-sample field gated off parses to `samples: []`; kept as one run, not `count` of them
+  defp handle_trun(%{fields: %{samples: [], sample_count: 0} = fields}, ts_acc, track_description) do
+    {[], {track_description.base_data_offset + fields.data_offset, ts_acc}}
+  end
+
   defp handle_trun(%{fields: %{samples: []} = fields}, ts_acc, track_description) do
     count = fields.sample_count
     offset = track_description.base_data_offset + fields.data_offset
@@ -97,13 +100,13 @@ defmodule Membrane.MP4.Demuxer.CMAF.SamplesInfo do
       offset: offset,
       ts: ts_acc,
       count: count,
-      size: size || 0,
+      size: size,
       duration: duration,
       composition_offset: 0,
       track_id: track_description.track_id
     }
 
-    {[run], {offset + count * (size || 0), ts_acc + count * duration}}
+    {[run], {offset + count * size, ts_acc + count * duration}}
   end
 
   defp handle_trun(

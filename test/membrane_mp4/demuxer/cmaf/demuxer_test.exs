@@ -345,15 +345,22 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
       assert {:ok, [], _engine} = Engine.pop_samples(engine)
     end
 
+    test "keeps an empty run from invalidating the one before it" do
+      header = @audio_header
+      fragment = gated_off_moof([2, 0]) <> box("mdat", <<1, 1, 1, 1, 2, 2, 2, 2>>)
+
+      engine = Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
+      {:ok, samples, _engine} = Engine.pop_samples(engine)
+
+      assert Enum.map(samples, & &1.payload) == [<<1, 1, 1, 1>>, <<2, 2, 2, 2>>]
+    end
+
     test "rejects a second run that claims bytes an earlier run in the same traf already did" do
       header = @audio_header
 
-      trun_size = byte_size(box("trun", <<0::8, 0x1::24, 0::32, 0::signed-32>>))
-      offset = byte_size(box("moof", box("traf", traf_header(1)))) + 2 * trun_size + 8
-
-      trun = box("trun", <<0::8, 0x1::24, 1000::32, offset::signed-32>>)
-      moof = box("moof", box("traf", traf_header(1) <> trun <> trun))
-      fragment = moof <> box("mdat", :binary.copy(<<0>>, 1000))
+      fragment =
+        gated_off_moof([1000, 1000], default_sample_size: 1) <>
+          box("mdat", :binary.copy(<<0>>, 1000))
 
       assert_raise RuntimeError, ~r/Malformed fragment/, fn ->
         Engine.new() |> Engine.feed!(header) |> Engine.feed!(fragment)
@@ -390,15 +397,18 @@ defmodule Membrane.MP4.Demuxer.CMAF.DemuxerTest do
     box("tfhd", tfhd_body) <> box("tfdt", <<1::8, 0::24, 0::64>>)
   end
 
-  defp gated_off_moof(sample_count, opts \\ []) do
+  defp gated_off_moof(sample_counts, opts \\ []) do
+    counts = List.wrap(sample_counts)
     size = Keyword.get(opts, :default_sample_size, 4)
-    offset = Keyword.get(opts, :data_offset) || byte_size(moof_at(sample_count, size, 0)) + 8
-    moof_at(sample_count, size, offset)
+    offset = Keyword.get(opts, :data_offset) || byte_size(moof_at(counts, size, 0)) + 8
+    moof_at(counts, size, offset)
   end
 
-  defp moof_at(sample_count, size, offset) do
-    trun = box("trun", <<0::8, 0x1::24, sample_count::32, offset::signed-32>>)
-    box("moof", box("traf", traf_header(size) <> trun))
+  defp moof_at(counts, size, offset) do
+    truns =
+      Enum.map_join(counts, &box("trun", <<0::8, 0x1::24, &1::32, offset::signed-32>>))
+
+    box("moof", box("traf", traf_header(size) <> truns))
   end
 
   defp get_files(directory_path, regexes) do
